@@ -26,7 +26,9 @@ class QueryState(TypedDict, total=False):
     question: str
     role: str
     intent: str
+    relevant_tables: list[str]
     schema_context: str
+    context_explanation: str
     generated_sql: str
     guardrail_verdict: GuardrailVerdict
     rows: list[dict[str, Any]]
@@ -50,6 +52,32 @@ def strip_sql_fences(text: str) -> str:
         cleaned = re.sub(r"^```(?:sql)?\s*", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\s*```$", "", cleaned)
     return cleaned.strip()
+
+
+def explain_table_selection(question: str, relevant_tables: list[str]) -> str:
+    """Explain why certain tables were selected based on the user question."""
+    from schema import TABLES
+    
+    explanations = []
+    lowered = question.lower()
+    
+    for table_name in relevant_tables:
+        table = TABLES.get(table_name)
+        if not table:
+            continue
+        
+        matched_keywords = [kw for kw in table.keywords if kw in lowered]
+        if matched_keywords:
+            reasons = f"matched keywords: {', '.join(matched_keywords)}"
+        else:
+            reasons = "default table for billing queries"
+        
+        explanations.append(f"**{table_name}:** {table.description} ({reasons})")
+    
+    if not explanations:
+        return "Using default billing tables (accounts, bill_invoice_detail, transactions)."
+    
+    return " | ".join(explanations)
 
 
 def generate_sql_with_fallback(question: str, schema_context: str, role: str) -> str:
@@ -153,7 +181,10 @@ def run_pipeline(
 ) -> QueryState:
     state: QueryState = {"question": question, "role": role}
     state["intent"] = classify_intent(question)
-    state["schema_context"] = format_schema_context(select_relevant_tables(question))
+    relevant_tables = select_relevant_tables(question)
+    state["relevant_tables"] = relevant_tables
+    state["schema_context"] = format_schema_context(relevant_tables)
+    state["context_explanation"] = explain_table_selection(question, relevant_tables)
 
     if state["intent"] != "read_query":
         state["generated_sql"] = "NO_VALID_QUERY"
