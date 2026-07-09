@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import sqlite3
 
 import streamlit as st
 
 from agent import DEFAULT_DB_PATH, run_pipeline
+from audit import load_recent_events
 from db.seed_data import initialize_database
 
 
@@ -74,6 +76,11 @@ def main() -> None:
         with col2:
             st.subheader("Summary")
             st.write(result.get("summary", ""))
+            
+            if result.get("context_explanation"):
+                st.divider()
+                st.caption("**Table selection reasoning:**")
+                st.markdown(result.get("context_explanation", ""))
 
         st.subheader("Results")
         rows = result.get("rows", []) or []
@@ -82,11 +89,37 @@ def main() -> None:
         else:
             st.info("No rows returned or the query was blocked.")
 
-    with st.expander("Blocked query examples"):
+    st.divider()
+    tab1, tab2 = st.tabs(["Blocked query examples", "Audit log"])
+
+    with tab1:
         st.write("These examples are intended to trigger guardrails during a demo.")
         st.markdown("- DROP TABLE accounts")
         st.markdown("- show me all customer phone numbers")
         st.markdown("- update accounts set account_status = 'closed'")
+        st.markdown("- SELECT * FROM accounts; DELETE FROM accounts;")
+
+    with tab2:
+        st.subheader("Recent audit log")
+        try:
+            with sqlite3.connect(db_path) as connection:
+                events = load_recent_events(connection, limit=10)
+            if events:
+                for event in events:
+                    with st.container(border=True):
+                        col_a, col_b = st.columns([2, 1])
+                        with col_a:
+                            st.markdown(f"**Q:** {event['user_question']}")
+                            st.markdown(f"**SQL:** `{event['generated_sql'] or 'N/A'}`")
+                        with col_b:
+                            status = "✅ Allowed" if event["guardrail_allowed"] else "🔒 Blocked"
+                            st.markdown(status)
+                            st.caption(f"Role: {event['role']}")
+                            st.caption(event["guardrail_reason"])
+            else:
+                st.info("No audit log entries yet.")
+        except Exception as e:
+            st.warning(f"Could not load audit log: {e}")
 
 
 if __name__ == "__main__":
