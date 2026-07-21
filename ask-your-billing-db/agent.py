@@ -85,6 +85,13 @@ def generate_sql_with_fallback(question: str, schema_context: str, role: str) ->
     if any(word in lowered for word in ("phone", "address", "name")) and role != "compliance_officer":
         return "NO_VALID_QUERY"
 
+    if "overdue" in lowered and "invoice" in lowered:
+        return (
+            "SELECT a.acc_id, a.region, b.invoice_id, b.invoice_date, b.amount, b.status "
+            "FROM accounts a JOIN bill_invoice_detail b ON a.acc_id = b.acc_id "
+            "WHERE b.status = 'overdue' ORDER BY b.invoice_date DESC LIMIT 100"
+        )
+
     if "region" in lowered and ("active" in lowered or "status" in lowered or "account status" in lowered):
         where_clause = " WHERE account_status = 'active'" if "active" in lowered else ""
         return (
@@ -100,13 +107,6 @@ def generate_sql_with_fallback(question: str, schema_context: str, role: str) ->
 
     if any(word in lowered for word in ("count", "how many", "number of")) and "account" in lowered:
         return "SELECT COUNT(*) AS account_count FROM accounts"
-
-    if "overdue" in lowered and "invoice" in lowered:
-        return (
-            "SELECT a.acc_id, a.region, b.invoice_id, b.invoice_date, b.amount, b.status "
-            "FROM accounts a JOIN bill_invoice_detail b ON a.acc_id = b.acc_id "
-            "WHERE b.status = 'overdue' ORDER BY b.invoice_date DESC LIMIT 100"
-        )
 
     if "transaction" in lowered or "payment" in lowered:
         return (
