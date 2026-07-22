@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
 from pathlib import Path
 from typing import Any, TypedDict
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from audit import log_event
 from guardrails import GuardrailVerdict, classify_intent, enforce_row_limit, validate_sql
@@ -20,6 +23,11 @@ except ImportError:  # pragma: no cover - dependency may not be installed yet
 
 DEFAULT_DB_PATH = Path(os.getenv("SQLITE_DB_PATH", "db/billing.sqlite"))
 DEFAULT_MODEL = os.getenv("GOOGLE_MODEL", "gemini-1.5-pro")
+FALLBACK_MODELS = (
+    DEFAULT_MODEL,
+    "gemini-2.5-flash",
+    "gemini-1.5-pro",
+)
 
 
 class QueryState(TypedDict, total=False):
@@ -35,15 +43,83 @@ class QueryState(TypedDict, total=False):
     summary: str
 
 
+class GeminiRESTResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class GeminiRESTClient:
+    def __init__(self, api_key: str, models: tuple[str, ...]) -> None:
+        self.api_key = api_key
+        self.models = models
+
+    @staticmethod
+    def _extract_message_content(message: Any) -> str:
+        return getattr(message, "content", str(message))
+
+    def _build_prompt(self, messages: list[Any]) -> str:
+        parts: list[str] = []
+        for message in messages:
+            content = self._extract_message_content(message)
+            parts.append(content)
+        return "\n\n".join(parts)
+
+    def invoke(self, messages: list[Any]) -> GeminiRESTResponse:
+        prompt = self._build_prompt(messages)
+
+        last_error: Exception | None = None
+        for model in self.models:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model}:generateContent?key={self.api_key}"
+            )
+            payload = json.dumps(
+                {
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [{"text": prompt}],
+                        }
+                    ],
+                    "generationConfig": {
+                        "temperature": 0,
+                    },
+                }
+            ).encode("utf-8")
+            request = Request(url, data=payload, headers={"Content-Type": "application/json"})
+
+            try:
+                with urlopen(request, timeout=30) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                text = (
+                    body.get("candidates", [{}])[0]
+                    .get("content", {})
+                    .get("parts", [{}])[0]
+                    .get("text", "")
+                )
+                if text:
+                    return GeminiRESTResponse(text)
+                last_error = RuntimeError(f"Gemini response from model '{model}' did not include text.")
+            except HTTPError as error:
+                last_error = error
+                if error.code in (400, 404):
+                    continue
+                raise
+            except URLError as error:
+                last_error = error
+                continue
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Gemini request failed without a response.")
+
+
 def build_llm() -> Any | None:
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_AI_STUDIO_API_KEY")
     if not api_key:
         return None
-    try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-    except ImportError:
-        return None
-    return ChatGoogleGenerativeAI(model=DEFAULT_MODEL, temperature=0, google_api_key=api_key)
+    models = tuple(dict.fromkeys(model for model in FALLBACK_MODELS if model))
+    return GeminiRESTClient(api_key=api_key, models=models)
 
 
 def strip_sql_fences(text: str) -> str:
@@ -141,7 +217,7 @@ def generate_sql(question: str, role: str, schema_context: str, llm: Any | None 
 
     response = llm.invoke(
         [
-            SystemMessage(content=SYSTEM_PROMPT.format(schema_context=schema_context)),
+            SystemMessage(content=SYSTEM_PROMPT.format(schema_context=schema_context, user_question=question)),
             HumanMessage(content=question),
         ]
     )

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import sqlite3
+from pathlib import Path
 
 import streamlit as st
 
-from agent import DEFAULT_DB_PATH, run_pipeline
+from agent import DEFAULT_DB_PATH, DEFAULT_MODEL, build_llm, run_pipeline
 from audit import load_recent_events
 from db.seed_data import initialize_database
 
@@ -18,6 +18,24 @@ EXAMPLES = {
     "Account summary": "How many accounts are active in each region?",
 }
 
+
+def load_local_env() -> None:
+    env_path = Path(__file__).with_name(".env")
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_local_env()
 
 def ensure_database_exists(db_path: Path) -> None:
     if not db_path.exists():
@@ -40,11 +58,18 @@ def main() -> None:
 
     db_path = resolve_db_path()
     ensure_database_exists(db_path)
+    llm = build_llm()
 
     with st.sidebar:
         st.header("Access")
         role = st.selectbox("Role", ["analyst", "compliance_officer"], index=0)
         st.markdown("The compliance role can query PII columns; the analyst role cannot.")
+
+        st.header("LLM status")
+        if llm is not None:
+            st.success(f"Gemini enabled: {DEFAULT_MODEL}")
+        else:
+            st.warning("Fallback mode only: set GOOGLE_API_KEY in .env to enable Gemini.")
 
         st.header("Demo queries")
         for label, example in EXAMPLES.items():
@@ -61,7 +86,7 @@ def main() -> None:
 
     if run_clicked:
         with st.spinner("Generating and validating SQL..."):
-            result = run_pipeline(question, role=role, db_path=db_path)
+            result = run_pipeline(question, role=role, db_path=db_path, llm=llm)
 
         col1, col2 = st.columns([1, 1])
         with col1:
