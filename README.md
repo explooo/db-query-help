@@ -31,3 +31,6 @@ streamlit run app.py
 - The analyst role cannot query `customer_pii` columns.
 - The database layer always wraps query execution with a hard row limit.
 - `db/seed_data.py` creates intentionally messy staging rows so the demo has realistic edge cases.
+
+## Live Demo
+https://db-query-app-eyes2shcfrwtcqokmzpekv.streamlit.app/
